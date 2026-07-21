@@ -1,0 +1,20 @@
+manifestVersion: 1
+name: "@mgreten/contained-git-write"
+version: "2026.07.20.1"
+description: >
+  Writes a file into an existing git clone, refusing any path that escapes
+  the repository root or targets .git/. Resolves the target against the
+  real, symlink-resolved workspace root, verifies the workspace is an
+  actual git repository, and creates parent directories as needed. Does
+  not clone, branch, commit, or push.
+repository: https://github.com/meagerfindings/swamp-contained-git-write
+paths:
+  base: manifest
+additionalFiles:
+  - README.md
+  - LICENSE.md
+models:
+  - model.ts
+platforms:
+  - linux-x86_64
+  - darwin-aarch64
