@@ -220,7 +220,7 @@ async function resolveContained(
 /** Contained file-write model for an existing plain git clone. */
 export const model = {
   type: "@mgreten/contained-git-write",
-  version: "2026.07.20.1",
+  version: "2026.07.22.1",
   description:
     "Write a file into an existing git clone, refusing any path that " +
     "escapes the repository root or targets .git/. Does not clone, " +
