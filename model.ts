@@ -24,8 +24,8 @@
  *
  * Shipping a write path (however well-contained) whose *availability* is a
  * coin flip is worse than not shipping it, so this is a plain new model
- * type instead: `export const model`, its own resource spec, one load,
- * no merge step, no race.
+ * type instead, with its own resource spec, one load, no merge step, and no
+ * race.
  *
  * The containment guarantees are unchanged from the abandoned extension
  * attempt:
@@ -220,7 +220,7 @@ async function resolveContained(
 /** Contained file-write model for an existing plain git clone. */
 export const model = {
   type: "@mgreten/contained-git-write",
-  version: "2026.07.22.1",
+  version: "2026.07.22.2",
   description:
     "Write a file into an existing git clone, refusing any path that " +
     "escapes the repository root or targets .git/. Does not clone, " +
