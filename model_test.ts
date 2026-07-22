@@ -40,6 +40,9 @@ function makeContext(): FakeContext {
     written,
     logger: { info: () => {} },
     writeResource: (specName, name, data) => {
+      if (name.includes("\\") || name.includes("..") || name.length > 255) {
+        throw new Error(`invalid resource instance name: ${name}`);
+      }
       written.push({ specName, name, data });
       return Promise.resolve({ name });
     },
@@ -271,8 +274,7 @@ Deno.test("write_file writes a file inside the repo on the happy path", async ()
 
     const recorded = context.written[0];
     assertEquals(recorded.specName, "write");
-    // `${project}--${path}` with every `/` replaced by `--`.
-    assertEquals(recorded.name, "org--repo--src--nested--hello.txt");
+    assertEquals(/^write-[0-9a-f]{64}$/.test(recorded.name), true);
     assertEquals(recorded.data.project, "org/repo");
     assertEquals(recorded.data.path, "src/nested/hello.txt");
     assertEquals(recorded.data.bytesWritten, "hello world".length);
@@ -280,6 +282,28 @@ Deno.test("write_file writes a file inside the repo on the happy path", async ()
 
     const onDisk = await Deno.readTextFile(`${repo}/src/nested/hello.txt`);
     assertEquals(onDisk, "hello world");
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file uses a storage-safe receipt name for punctuation in valid metadata", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const context = makeContext();
+    await writeFile.execute(
+      {
+        project: "org\\repo..label",
+        localPath: repo,
+        path: "notes..txt",
+        content: "still valid",
+      },
+      context,
+    );
+
+    assertEquals(context.written.length, 1);
+    assertEquals(/^write-[0-9a-f]{64}$/.test(context.written[0].name), true);
+    assertEquals(await Deno.readTextFile(`${repo}/notes..txt`), "still valid");
   } finally {
     await Deno.remove(repo, { recursive: true });
   }

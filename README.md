@@ -43,6 +43,14 @@ arbitrary-file-write primitive anywhere the process user can reach, so
 
 It creates parent directories for new files as needed.
 
+The containment check assumes the workspace is not being modified by a
+hostile concurrent process while the method runs, and that the target file is
+not hard-linked to a name outside the workspace. Deno does not expose the
+descriptor-relative filesystem operations needed to close those two operating
+system-level races. The `.git` check verifies the filesystem shape this model
+needs — an existing directory with a `.git` file or directory — rather than
+invoking Git to prove repository integrity.
+
 ## Example
 
 ```bash

@@ -53,6 +53,10 @@
  *   and after symlink resolution — writing there could rewrite hooks,
  *   config, or refs, and a hook write is remote code execution on the
  *   next git operation in that workspace;
+ * - containment assumes no other process concurrently replaces validated
+ *   path components and that the target is not hard-linked outside the
+ *   workspace. Deno does not expose the descriptor-relative filesystem
+ *   operations required to defend against those two cases;
  * - the write itself is plain Deno file I/O — no subprocess, no shell, so
  *   the command-injection risk category that applies to shell-backed
  *   tools does not apply here.
@@ -108,6 +112,23 @@ const WriteOutputSchema = z.object({
 
 /** Raised for any path that fails the containment checks below. */
 class ContainmentError extends Error {}
+
+/** Return a bounded, storage-safe receipt name for one canonical write target. */
+async function receiptName(
+  project: string,
+  realRoot: string,
+  normalizedPath: string,
+): Promise<string> {
+  const identity = new TextEncoder().encode(
+    JSON.stringify([project, realRoot, normalizedPath]),
+  );
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", identity),
+  );
+  return `write-${
+    Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")
+  }`;
+}
 
 /**
  * Split a caller-supplied repo-relative path into clean segments, or throw
@@ -179,8 +200,9 @@ async function resolveContained(
     try {
       const info = await Deno.lstat(next);
       isSymlink = info.isSymlink;
-    } catch {
-      // Does not exist yet — fine, it will be created under `current`.
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      // Does not exist yet — fine; it will be created under `current`.
     }
     if (isSymlink) {
       const resolved = await Deno.realPath(next);
@@ -226,14 +248,15 @@ export const model = {
         "localPath, refusing any path that escapes the repository root " +
         "or targets .git/. Creates parent directories as needed.",
       arguments: z.object({
-        project: z.string().describe(
+        project: z.string().min(1).describe(
           "Descriptive label for the target repo (e.g. myorg/my-repo). " +
             "Not used to resolve the path — localPath is authoritative.",
         ),
-        localPath: z.string().describe(
-          "Absolute path to an existing git clone's working directory.",
-        ),
-        path: z.string().describe(
+        localPath: z.string().min(1).refine(
+          (value) => value.startsWith("/"),
+          "localPath must be absolute",
+        ).describe("Absolute path to an existing git working directory."),
+        path: z.string().min(1).describe(
           "File path relative to repo root (no .. or absolute paths, " +
             "and nothing under .git/).",
         ),
@@ -254,18 +277,22 @@ export const model = {
           );
         }
 
-        const rootInfo = await Deno.stat(realRoot).catch(() => null);
-        if (!rootInfo || !rootInfo.isDirectory) {
+        const rootInfo = await Deno.stat(realRoot);
+        if (!rootInfo.isDirectory) {
           throw new Error(`Workspace '${realRoot}' is not a directory.`);
         }
 
-        const gitEntry = await Deno.lstat(`${realRoot}/.git`).catch(
-          () => null,
-        );
+        let gitEntry: Deno.FileInfo | null;
+        try {
+          gitEntry = await Deno.lstat(`${realRoot}/.git`);
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+          gitEntry = null;
+        }
         if (!gitEntry) {
           throw new Error(
             `'${realRoot}' has no .git entry — refusing to write into a ` +
-              "directory that is not a git repository.",
+              "directory that is not a git working directory.",
           );
         }
 
@@ -280,6 +307,12 @@ export const model = {
           }
           throw e;
         }
+
+        const instanceName = await receiptName(
+          args.project,
+          realRoot,
+          segments.join("/"),
+        );
 
         let existedBefore: boolean;
         try {
@@ -313,6 +346,11 @@ export const model = {
           writtenAt: new Date().toISOString(),
         };
 
+        const handle = await context.writeResource(
+          "write",
+          instanceName,
+          result as unknown as Record<string, unknown>,
+        );
         context.logger.info(
           "Wrote {path} into {project} ({localPath}): {bytesWritten} " +
             "bytes, created={created}",
@@ -323,16 +361,6 @@ export const model = {
             bytesWritten: result.bytesWritten,
             created: result.created,
           },
-        );
-
-        const instanceName = `${args.project}--${args.path}`.replace(
-          /\//g,
-          "--",
-        );
-        const handle = await context.writeResource(
-          "write",
-          instanceName,
-          result as unknown as Record<string, unknown>,
         );
         return { dataHandles: [handle] };
       },
