@@ -6,16 +6,16 @@ targets `.git/`.
 
 ## Why this exists
 
-Hermes needs to update files inside `/opt/data/swamp-unifi-release-safety` —
-a plain git clone, not a Swamp-managed repo — which the `swamp_definition_write`
-tool cannot reach. The installed `@twonines/git-workspace` model type covers
-clone/branch/read/commit/push for that same workspace, but has no write
+A caller sometimes needs to write a file into an *existing plain git clone* —
+one that is not a Swamp-managed repo — which the `swamp_definition_write` tool
+cannot reach. A git-workspace model type (e.g. `@twonines/git-workspace`) may
+cover clone/branch/read/commit/push for such a workspace but provide no write
 method.
 
-This was first attempted as an extension of `@twonines/git-workspace`
+This was first attempted as an extension of a git-workspace type
 (`export const extension`), per the "extend, don't be clever" rule. That
-approach was abandoned after two problems surfaced on this deployment's
-Swamp build: an extension-declared `resources` entry builds but is never
+approach was abandoned after two problems surfaced on the Swamp build it was
+first tried on: an extension-declared `resources` entry builds but is never
 wired into the runtime resource registry (every write then fails with
 `Undeclared resource spec`), and even the `methods` merge itself was
 nondeterministic — four back-to-back, unmodified `swamp model type describe`
@@ -46,10 +46,10 @@ It creates parent directories for new files as needed.
 ## Example
 
 ```bash
-swamp model create @mgreten/contained-git-write unifi-safety-writer --json
-swamp model method run unifi-safety-writer write_file --json \
-  --input project=meagerfindings/swamp-unifi-release-safety \
-  --input localPath=/opt/data/swamp-unifi-release-safety \
+swamp model create @mgreten/contained-git-write my-writer --json
+swamp model method run my-writer write_file --json \
+  --input project=myorg/my-repo \
+  --input localPath=/path/to/clone \
   --input path=README.md \
   --input content="# updated"
 ```
@@ -58,8 +58,8 @@ A successful call records a `write` resource shaped like this:
 
 ```json
 {
-  "project": "meagerfindings/swamp-unifi-release-safety",
-  "localPath": "/opt/data/swamp-unifi-release-safety",
+  "project": "myorg/my-repo",
+  "localPath": "/path/to/clone",
   "path": "README.md",
   "bytesWritten": 9,
   "created": false,
