@@ -1,33 +1,26 @@
 /**
  * Contained file writes into an existing plain git clone.
  *
- * A standalone model type rather than an extension of
- * `@twonines/git-workspace`. It was originally authored as
- * `export const extension = { type: "@twonines/git-workspace", ... }`, per
- * the "extend, don't be clever" rule — the domain (a git workspace) is
- * already covered by an installed type, so a new method was the right
- * first move. That approach was abandoned after two independent,
- * empirically-confirmed problems with method/resource extension on this
- * deployed Swamp build (rubric version 3, CLI built ~51 days before this
- * was written):
+ * This is a standalone model type rather than an extension of another git
+ * workspace type. Extending an installed type was the right first approach
+ * under the "extend, don't be clever" rule, but it was abandoned after two
+ * independent, empirically-confirmed problems with method/resource extension
+ * on the deployed Swamp build (rubric version 3, CLI built ~51 days before
+ * this was written):
  *
- * 1. Declaring a new `resources` entry on `export const extension` builds
- *    cleanly and the method registers, but every call to
+ * 1. Declaring a new resource on the extension builds cleanly and the method
+ *    registers, but every call to
  *    `context.writeResource` against it then fails at runtime with
- *    `Undeclared resource spec 'write' in model '@twonines/git-workspace'`
+ *    an undeclared-resource error
  *    — the extension's `resources` field is silently dropped somewhere
  *    between build and the runtime resource registry, even though
  *    `methods` merges correctly.
  * 2. Even the `methods` merge itself proved nondeterministic: four
- *    consecutive, unmodified `swamp model type describe
- *    @twonines/git-workspace --json` calls returned the merged
+ *    consecutive, unmodified type-description calls returned the merged
  *    `write_file` method on three of them and silently omitted it on the
- *    fourth, with `swamp doctor extensions --json` in between showing the
- *    extension's own bundle flipping between `Indexed` and
- *    `BundleBuildFailed` (`Error: Method 'write_file' already exists on
- *    model type '@twonines/git-workspace'`) with no source change between
- *    calls — a self-conflicting duplicate-registration race in the
- *    extension loader itself.
+ *    fourth. Extension diagnostics in between showed its bundle flipping
+ *    between indexed and duplicate-method build failures with no source
+ *    change — a self-conflicting registration race in the extension loader.
  *
  * Shipping a write path (however well-contained) whose *availability* is a
  * coin flip is worse than not shipping it, so this is a plain new model

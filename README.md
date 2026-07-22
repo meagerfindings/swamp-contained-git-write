@@ -8,22 +8,17 @@ targets `.git/`.
 
 A caller sometimes needs to write a file into an *existing plain git clone* —
 one that is not a Swamp-managed repo — which the `swamp_definition_write` tool
-cannot reach. A git-workspace model type (e.g. `@twonines/git-workspace`) may
-cover clone/branch/read/commit/push for such a workspace but provide no write
-method.
+cannot reach. An installed git-workspace model may cover
+clone/branch/read/commit/push for such a workspace but provide no write method.
 
-This was first attempted as an extension of a git-workspace type
-(`export const extension`), per the "extend, don't be clever" rule. That
-approach was abandoned after two problems surfaced on the Swamp build it was
-first tried on: an extension-declared `resources` entry builds but is never
-wired into the runtime resource registry (every write then fails with
-`Undeclared resource spec`), and even the `methods` merge itself was
-nondeterministic — four back-to-back, unmodified `swamp model type describe`
-calls returned the merged method on three and silently omitted it on the
-fourth, with the extension's own bundle flipping between `Indexed` and
-`BundleBuildFailed` in between. A write path whose availability is a coin
-flip is worse than no write path, so this is a plain new model type instead
-— one load, its own resource spec, no merge step, no race.
+This was first attempted as an extension of a git-workspace type, per the
+"extend, don't be clever" rule. That approach was abandoned after two problems
+surfaced on the Swamp build it was first tried on: an extension-declared
+resource built but was never wired into the runtime resource registry, and
+even the method merge was nondeterministic across back-to-back, unmodified type
+descriptions. A write path whose availability is a coin flip is worse than no
+write path, so this is a plain new model type instead — one load, its own
+resource spec, no merge step, no race.
 
 ## Containment
 
