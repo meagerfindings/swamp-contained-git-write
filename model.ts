@@ -112,7 +112,8 @@ class ContainmentError extends Error {}
 /**
  * Split a caller-supplied repo-relative path into clean segments, or throw
  * `ContainmentError` if it is absolute, contains `..`/`.`/empty segments,
- * a null byte, or targets `.git` as its first segment.
+ * a null byte, or contains a `.git` segment (case-insensitively, so the
+ * guarantee also holds on case-insensitive filesystems).
  */
 function normalizeRelativePath(rawPath: string): string[] {
   if (typeof rawPath !== "string" || rawPath.length === 0) {
@@ -132,9 +133,9 @@ function normalizeRelativePath(rawPath: string): string[] {
         `path segment '${segment || "(empty)"}' is not allowed`,
       );
     }
-  }
-  if (segments[0] === ".git") {
-    throw new ContainmentError("writes under .git/ are refused");
+    if (segment.toLowerCase() === ".git") {
+      throw new ContainmentError("writes under .git/ are refused");
+    }
   }
   return segments;
 }
@@ -153,7 +154,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 function assertNotInsideGit(root: string, current: string): void {
   if (current === root) return;
   const relative = current.slice(root.length + 1);
-  if (relative.split("/")[0] === ".git") {
+  if (relative.split("/").some((segment) => segment.toLowerCase() === ".git")) {
     throw new ContainmentError("writes under .git/ are refused");
   }
 }

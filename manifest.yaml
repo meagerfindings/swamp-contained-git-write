@@ -13,6 +13,7 @@ paths:
 additionalFiles:
   - README.md
   - LICENSE.md
+  - model_test.ts
 models:
   - model.ts
 platforms:

@@ -133,7 +133,11 @@ Deno.test("write_file rejects a path that escapes the repo root via a symlink", 
     for await (const entry of Deno.readDir(outside)) {
       outsideEntries.push(entry.name);
     }
-    assertEquals(outsideEntries, [], "nothing should be written outside the repo");
+    assertEquals(
+      outsideEntries,
+      [],
+      "nothing should be written outside the repo",
+    );
   } finally {
     await Deno.remove(repo, { recursive: true });
     await Deno.remove(outside, { recursive: true });
@@ -160,6 +164,86 @@ Deno.test("write_file rejects a write into .git/", async () => {
     );
     assertEquals(context.written.length, 0);
     const hook = await Deno.stat(`${repo}/.git/hooks/pre-commit`).catch(() =>
+      null
+    );
+    assertEquals(hook, null);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file rejects case variants of .git on case-insensitive filesystems", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const context = makeContext();
+    await assertRejects(
+      () =>
+        writeFile.execute(
+          {
+            project: "test/project",
+            localPath: repo,
+            path: ".Git/hooks/pre-commit",
+            content: "#!/bin/sh\necho pwned",
+          },
+          context,
+        ),
+      Error,
+      "writes under .git/ are refused",
+    );
+    assertEquals(context.written.length, 0);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file rejects a nested .git segment", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const context = makeContext();
+    await assertRejects(
+      () =>
+        writeFile.execute(
+          {
+            project: "test/project",
+            localPath: repo,
+            path: "submodule/.git/hooks/pre-commit",
+            content: "#!/bin/sh\necho pwned",
+          },
+          context,
+        ),
+      Error,
+      "writes under .git/ are refused",
+    );
+    assertEquals(context.written.length, 0);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file rejects a symlink resolving under a nested case-variant .git", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const nestedGit = `${repo}/nested/.GiT`;
+    await Deno.mkdir(`${nestedGit}/hooks`, { recursive: true });
+    await Deno.symlink(nestedGit, `${repo}/git-link`, { type: "dir" });
+
+    const context = makeContext();
+    await assertRejects(
+      () =>
+        writeFile.execute(
+          {
+            project: "test/project",
+            localPath: repo,
+            path: "git-link/hooks/pre-commit",
+            content: "#!/bin/sh\necho pwned",
+          },
+          context,
+        ),
+      Error,
+      "writes under .git/ are refused",
+    );
+    assertEquals(context.written.length, 0);
+    const hook = await Deno.stat(`${nestedGit}/hooks/pre-commit`).catch(() =>
       null
     );
     assertEquals(hook, null);
