@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@mgreten/contained-git-write"
-version: "2026.07.22.2"
+version: "2026.07.22.3"
 description: >
   Writes a file into an existing git clone, refusing any path that escapes
   the repository root or targets .git/. Resolves the target against the

@@ -84,6 +84,15 @@ interface WriteFileArgs {
   content: string;
 }
 
+/** Arguments accepted by `write_file_base64`. */
+interface WriteFileBase64Args {
+  project: string;
+  localPath: string;
+  path: string;
+  contentBase64: string;
+  expectedSha256: string;
+}
+
 /** Result persisted under the `write` resource spec. */
 interface WriteResult {
   project: string;
@@ -92,6 +101,7 @@ interface WriteResult {
   bytesWritten: number;
   created: boolean;
   writtenAt: string;
+  sha256: string;
 }
 
 const WriteOutputSchema = z.object({
@@ -101,6 +111,8 @@ const WriteOutputSchema = z.object({
   bytesWritten: z.number(),
   created: z.boolean(),
   writtenAt: z.string(),
+  // Optional keeps receipts persisted by earlier model versions readable.
+  sha256: z.string().optional(),
 });
 
 /** Raised for any path that fails the containment checks below. */
@@ -217,10 +229,130 @@ async function resolveContained(
   return current;
 }
 
+/** Return the lowercase SHA-256 digest for arbitrary bytes. */
+async function sha256(content: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", Uint8Array.from(content).buffer),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
+/** Decode canonical standard base64, rejecting whitespace and URL-safe input. */
+function decodeStandardBase64(contentBase64: string): Uint8Array {
+  if (
+    contentBase64.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      contentBase64,
+    )
+  ) {
+    throw new Error("contentBase64 must be valid standard base64");
+  }
+  try {
+    return Uint8Array.from(
+      atob(contentBase64),
+      (character) => character.charCodeAt(0),
+    );
+  } catch {
+    throw new Error("contentBase64 must be valid standard base64");
+  }
+}
+
+/** Apply all containment checks and write the supplied bytes exactly once. */
+async function writeContained(
+  args: Pick<WriteFileArgs, "project" | "localPath" | "path">,
+  content: Uint8Array,
+  contentSha256: string,
+  context: WriteFileContext,
+): Promise<{ dataHandles: { name: string }[] }> {
+  let realRoot: string;
+  try {
+    realRoot = await Deno.realPath(args.localPath);
+  } catch (e) {
+    throw new Error(
+      `Workspace '${args.localPath}' does not exist: ${(e as Error).message}.`,
+    );
+  }
+
+  const rootInfo = await Deno.stat(realRoot);
+  if (!rootInfo.isDirectory) {
+    throw new Error(`Workspace '${realRoot}' is not a directory.`);
+  }
+
+  let gitEntry: Deno.FileInfo | null;
+  try {
+    gitEntry = await Deno.lstat(`${realRoot}/.git`);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    gitEntry = null;
+  }
+  if (!gitEntry) {
+    throw new Error(
+      `'${realRoot}' has no .git entry — refusing to write into a ` +
+        "directory that is not a git working directory.",
+    );
+  }
+
+  let segments: string[];
+  let targetPath: string;
+  try {
+    segments = normalizeRelativePath(args.path);
+    targetPath = await resolveContained(realRoot, segments);
+  } catch (e) {
+    if (e instanceof ContainmentError) {
+      throw new Error(`Refusing to write '${args.path}': ${e.message}`);
+    }
+    throw e;
+  }
+
+  const instanceName = await receiptName(
+    args.project,
+    realRoot,
+    segments.join("/"),
+  );
+  let existedBefore: boolean;
+  try {
+    const existing = await Deno.lstat(targetPath);
+    if (existing.isDirectory) {
+      throw new Error(`'${args.path}' is an existing directory, not a file.`);
+    }
+    existedBefore = true;
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) existedBefore = false;
+    else throw e;
+  }
+
+  const parentDir = targetPath.slice(0, targetPath.lastIndexOf("/"));
+  await Deno.mkdir(parentDir, { recursive: true });
+  await Deno.writeFile(targetPath, content);
+
+  const result: WriteResult = {
+    project: args.project,
+    localPath: realRoot,
+    path: args.path,
+    bytesWritten: content.byteLength,
+    created: !existedBefore,
+    writtenAt: new Date().toISOString(),
+    sha256: contentSha256,
+  };
+  const handle = await context.writeResource(
+    "write",
+    instanceName,
+    result as unknown as Record<string, unknown>,
+  );
+  context.logger.info(
+    "Wrote {path} into {project} ({localPath}): {bytesWritten} bytes, " +
+      "created={created}, sha256={sha256}",
+    result,
+  );
+  return { dataHandles: [handle] };
+}
+
 /** Contained file-write model for an existing plain git clone. */
 export const model = {
   type: "@mgreten/contained-git-write",
-  version: "2026.07.22.2",
+  version: "2026.07.22.3",
   description:
     "Write a file into an existing git clone, refusing any path that " +
     "escapes the repository root or targets .git/. Does not clone, " +
@@ -259,103 +391,45 @@ export const model = {
         args: WriteFileArgs,
         context: WriteFileContext,
       ): Promise<{ dataHandles: { name: string }[] }> => {
-        let realRoot: string;
-        try {
-          realRoot = await Deno.realPath(args.localPath);
-        } catch (e) {
-          throw new Error(
-            `Workspace '${args.localPath}' does not exist: ${
-              (e as Error).message
-            }.`,
-          );
-        }
-
-        const rootInfo = await Deno.stat(realRoot);
-        if (!rootInfo.isDirectory) {
-          throw new Error(`Workspace '${realRoot}' is not a directory.`);
-        }
-
-        let gitEntry: Deno.FileInfo | null;
-        try {
-          gitEntry = await Deno.lstat(`${realRoot}/.git`);
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
-          gitEntry = null;
-        }
-        if (!gitEntry) {
-          throw new Error(
-            `'${realRoot}' has no .git entry — refusing to write into a ` +
-              "directory that is not a git working directory.",
-          );
-        }
-
-        let segments: string[];
-        let targetPath: string;
-        try {
-          segments = normalizeRelativePath(args.path);
-          targetPath = await resolveContained(realRoot, segments);
-        } catch (e) {
-          if (e instanceof ContainmentError) {
-            throw new Error(`Refusing to write '${args.path}': ${e.message}`);
-          }
-          throw e;
-        }
-
-        const instanceName = await receiptName(
-          args.project,
-          realRoot,
-          segments.join("/"),
-        );
-
-        let existedBefore: boolean;
-        try {
-          const existing = await Deno.lstat(targetPath);
-          if (existing.isDirectory) {
-            throw new Error(
-              `'${args.path}' is an existing directory, not a file.`,
-            );
-          }
-          existedBefore = true;
-        } catch (e) {
-          if (e instanceof Deno.errors.NotFound) {
-            existedBefore = false;
-          } else {
-            throw e;
-          }
-        }
-
-        const parentDir = targetPath.slice(0, targetPath.lastIndexOf("/"));
-        await Deno.mkdir(parentDir, { recursive: true });
-
         const encoded = new TextEncoder().encode(args.content);
-        await Deno.writeFile(targetPath, encoded);
-
-        const result: WriteResult = {
-          project: args.project,
-          localPath: realRoot,
-          path: args.path,
-          bytesWritten: encoded.byteLength,
-          created: !existedBefore,
-          writtenAt: new Date().toISOString(),
-        };
-
-        const handle = await context.writeResource(
-          "write",
-          instanceName,
-          result as unknown as Record<string, unknown>,
+        return await writeContained(
+          args,
+          encoded,
+          await sha256(encoded),
+          context,
         );
-        context.logger.info(
-          "Wrote {path} into {project} ({localPath}): {bytesWritten} " +
-            "bytes, created={created}",
-          {
-            path: args.path,
-            project: args.project,
-            localPath: realRoot,
-            bytesWritten: result.bytesWritten,
-            created: result.created,
-          },
-        );
-        return { dataHandles: [handle] };
+      },
+    },
+    write_file_base64: {
+      description: "Decode and hash-verify standard base64, then write the " +
+        "exact bytes inside an existing git clone using the same containment " +
+        "rules as write_file. Useful for opaque content containing Swamp " +
+        "method-input expression syntax.",
+      arguments: z.object({
+        project: z.string().min(1),
+        localPath: z.string().min(1).refine(
+          (value) => value.startsWith("/"),
+          "localPath must be absolute",
+        ),
+        path: z.string().min(1),
+        contentBase64: z.string().describe("Canonical standard base64 bytes."),
+        expectedSha256: z.string().regex(/^[0-9a-fA-F]{64}$/).describe(
+          "Expected SHA-256 hex digest (case-insensitive).",
+        ),
+      }),
+      execute: async (
+        args: WriteFileBase64Args,
+        context: WriteFileContext,
+      ): Promise<{ dataHandles: { name: string }[] }> => {
+        const decoded = decodeStandardBase64(args.contentBase64);
+        const actualSha256 = await sha256(decoded);
+        if (actualSha256 !== args.expectedSha256.toLowerCase()) {
+          throw new Error(
+            `SHA-256 mismatch: expected ${args.expectedSha256.toLowerCase()}, ` +
+              `got ${actualSha256}`,
+          );
+        }
+        return await writeContained(args, decoded, actualSha256, context);
       },
     },
   },

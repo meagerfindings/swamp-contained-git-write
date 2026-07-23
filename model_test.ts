@@ -16,6 +16,20 @@ import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { model } from "./model.ts";
 
 const writeFile = model.methods.write_file;
+const writeFileBase64 = model.methods.write_file_base64;
+
+async function digestHex(content: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", Uint8Array.from(content).buffer),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
+function standardBase64(content: Uint8Array): string {
+  return btoa(String.fromCharCode(...content));
+}
 
 /** Minimal shape written by the fake `context.writeResource` below. */
 interface RecordedWrite {
@@ -279,6 +293,10 @@ Deno.test("write_file writes a file inside the repo on the happy path", async ()
     assertEquals(recorded.data.path, "src/nested/hello.txt");
     assertEquals(recorded.data.bytesWritten, "hello world".length);
     assertEquals(recorded.data.created, true);
+    assertEquals(
+      recorded.data.sha256,
+      await digestHex(new TextEncoder().encode("hello world")),
+    );
 
     const onDisk = await Deno.readTextFile(`${repo}/src/nested/hello.txt`);
     assertEquals(onDisk, "hello world");
@@ -304,6 +322,120 @@ Deno.test("write_file uses a storage-safe receipt name for punctuation in valid 
     assertEquals(context.written.length, 1);
     assertEquals(/^write-[0-9a-f]{64}$/.test(context.written[0].name), true);
     assertEquals(await Deno.readTextFile(`${repo}/notes..txt`), "still valid");
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file_base64 preserves literal Swamp expression syntax exactly", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const content = new TextEncoder().encode(
+      "token: ${{ vault.get(my-vault, TODOIST_API_TOKEN) }}\n",
+    );
+    const context = makeContext();
+    await writeFileBase64.execute(
+      {
+        project: "org/repo",
+        localPath: repo,
+        path: "config/literal.yaml",
+        contentBase64: standardBase64(content),
+        expectedSha256: (await digestHex(content)).toUpperCase(),
+      },
+      context,
+    );
+
+    assertEquals(
+      await Deno.readFile(`${repo}/config/literal.yaml`),
+      content,
+    );
+    assertEquals(context.written[0].data.sha256, await digestHex(content));
+    assertEquals(context.written[0].data.bytesWritten, content.byteLength);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file_base64 rejects invalid standard base64", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const context = makeContext();
+    await assertRejects(
+      () =>
+        writeFileBase64.execute(
+          {
+            project: "org/repo",
+            localPath: repo,
+            path: "invalid.txt",
+            contentBase64: "not base64-_",
+            expectedSha256: "0".repeat(64),
+          },
+          context,
+        ),
+      Error,
+      "valid standard base64",
+    );
+    assertEquals(context.written.length, 0);
+    assertEquals(
+      await Deno.stat(`${repo}/invalid.txt`).catch(() => null),
+      null,
+    );
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file_base64 rejects a hash mismatch without mutation", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const target = `${repo}/existing.txt`;
+    await Deno.writeTextFile(target, "original");
+    const content = new TextEncoder().encode("replacement");
+    const context = makeContext();
+    await assertRejects(
+      () =>
+        writeFileBase64.execute(
+          {
+            project: "org/repo",
+            localPath: repo,
+            path: "existing.txt",
+            contentBase64: standardBase64(content),
+            expectedSha256: "0".repeat(64),
+          },
+          context,
+        ),
+      Error,
+      "SHA-256 mismatch",
+    );
+    assertEquals(await Deno.readTextFile(target), "original");
+    assertEquals(context.written.length, 0);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("write_file_base64 retains existing containment checks", async () => {
+  const repo = await makeTempRepo();
+  try {
+    const content = new TextEncoder().encode("escape");
+    const expectedSha256 = await digestHex(content);
+    const context = makeContext();
+    await assertRejects(
+      () =>
+        writeFileBase64.execute(
+          {
+            project: "org/repo",
+            localPath: repo,
+            path: ".git/hooks/pre-commit",
+            contentBase64: standardBase64(content),
+            expectedSha256,
+          },
+          context,
+        ),
+      Error,
+      "writes under .git/ are refused",
+    );
+    assertEquals(context.written.length, 0);
   } finally {
     await Deno.remove(repo, { recursive: true });
   }
